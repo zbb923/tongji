@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>饭团摊 · 营业额统计</title>
+<!-- 优先使用本地 ECharts，下载失败时回退到 CDN -->
+<script src="/static/echarts.min.js"></script>
+<script>window.echarts || document.write('<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.1/echarts.min.js"><\/script>');</script>
+<style>
+:root{
+  --bg:#f6f1e8;
+  --card:#ffffff;
+  --ink:#3b332a;
+  --ink2:#93877a;
+  --accent:#e07b39;
+  --accent-dark:#c96524;
+  --green:#4a9d6f;
+  --red:#d94352;
+  --line:#eee5d8;
+  --radius:16px;
+  --shadow:0 2px 12px rgba(90,70,40,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  padding:28px 16px 70px;
+}
+.wrap{max-width:960px;margin:0 auto}
+
+/* 页头 */
+.site-header{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.logo{
+  width:46px;height:46px;border-radius:13px;flex:none;
+  background:linear-gradient(135deg,#f2c94c,#e07b39);
+  color:#fff;font-weight:bold;font-size:15px;letter-spacing:1px;
+  display:flex;align-items:center;justify-content:center;
+}
+.site-header h1{font-size:22px}
+.site-header .sub{color:var(--ink2);font-size:13px;margin-top:4px}
+
+/* 卡片 */
+.card{
+  background:var(--card);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:20px;margin-bottom:18px;
+}
+.card-title{
+  font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px;
+}
+.card-title::before{content:'';width:4px;height:16px;border-radius:2px;background:var(--accent)}
+.chart-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.chart-head .card-title{margin:0}
+
+/* 录入表单 */
+.form-row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:6px}
+.field span{font-size:13px;color:var(--ink2)}
+.field input{
+  padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  font-size:15px;width:180px;background:#fdfbf7;color:var(--ink);outline:none;
+}
+.field input:focus{border-color:var(--accent)}
+.btn{
+  background:var(--accent);color:#fff;border:none;border-radius:10px;
+  padding:11px 30px;font-size:15px;cursor:pointer;
+}
+.btn:hover{background:var(--accent-dark)}
+.hint{font-size:12px;color:var(--ink2);margin-top:10px}
+
+/* 统计卡片 */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.stat{
+  background:var(--card);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:16px 18px;
+}
+.stat-label{font-size:13px;color:var(--ink2)}
+.stat-value{font-size:24px;font-weight:700;margin-top:6px;line-height:1.2}
+.stat-value small{font-size:13px;font-weight:400;color:var(--ink2);margin-left:2px}
+.stat-sub{font-size:12px;color:var(--ink2);margin-top:4px}
+.stat-accent{background:linear-gradient(135deg,#e07b39,#e89a55);color:#fff}
+.stat-accent .stat-label,.stat-accent .stat-sub{color:rgba(255,255,255,.85)}
+.stat-accent .stat-value small{color:rgba(255,255,255,.85)}
+
+/* 图表切换标签 */
+.tabs{display:flex;background:#f1e9dc;border-radius:10px;padding:3px}
+.tab{
+  border:none;background:transparent;padding:7px 16px;border-radius:8px;
+  font-size:13px;color:var(--ink2);cursor:pointer;
+}
+.tab.active{
+  background:#fff;color:var(--accent-dark);font-weight:600;
+  box-shadow:0 1px 4px rgba(0,0,0,.08);
+}
+#chart{height:380px;width:100%}
+
+/* 历史记录表格 */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{
+  text-align:left;color:var(--ink2);font-weight:500;font-size:13px;
+  padding:8px 10px;border-bottom:1px solid var(--line);
+}
+td{padding:9px 10px;border-bottom:1px solid #f5efe6}
+tr:last-child td{border-bottom:none}
+th.amt,td.amt{text-align:right;font-weight:600}
+td.op{text-align:right}
+.wk-badge{
+  background:#fdeaea;color:#c03540;font-size:12px;
+  padding:2px 8px;border-radius:6px;
+}
+.del{
+  border:none;background:none;color:#b9ab99;cursor:pointer;
+  font-size:13px;padding:4px 8px;border-radius:6px;
+}
+.del:hover{background:#fdeaea;color:#c03540}
+.empty{text-align:center;color:var(--ink2);font-size:14px;padding:24px 0;display:none}
+
+/* 提示气泡 */
+#toast{
+  position:fixed;left:50%;top:24px;z-index:99;
+  transform:translateX(-50%) translateY(-80px);
+  background:#3b332a;color:#fff;padding:10px 22px;border-radius:10px;
+  font-size:14px;opacity:0;transition:.3s;pointer-events:none;
+}
+#toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+
+/* 手机适配 */
+@media(max-width:640px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .form-row{gap:10px}
+  .field{flex:1;min-width:130px}
+  .field input{width:100%}
+  .form-row .btn{width:100%;padding:11px 0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="site-header">
+    <div class="logo">饭团</div>
+    <div>
+      <h1>饭团摊营业额统计</h1>
+      <p class="sub">记录每天营业额，看看星期几生意最好</p>
+    </div>
+  </header>
+
+  <!-- 录入营业额 -->
+  <section class="card">
+    <h2 class="card-title">录入营业额</h2>
+    <div class="form-row">
+      <label class="field">
+        <span>日期</span>
+        <input type="date" id="input-date">
+      </label>
+      <label class="field">
+        <span>营业额（元）</span>
+        <input type="number" id="input-amount" step="0.01" min="0" placeholder="如 358.5">
+      </label>
+      <button class="btn" id="btn-save">保存</button>
+    </div>
+    <p class="hint">同一天重复保存会覆盖更新；金额可以带小数</p>
+  </section>
+
+  <!-- 概览统计 -->
+  <section class="stats">
+    <div class="stat">
+      <div class="stat-label">累计营业额</div>
+      <div class="stat-value" id="stat-total">--</div>
+      <div class="stat-sub" id="stat-total-sub"></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">平均每天</div>
+      <div class="stat-value" id="stat-avg">--</div>
+      <div class="stat-sub" id="stat-avg-sub"></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">单日最高</div>
+      <div class="stat-value" id="stat-max">--</div>
+      <div class="stat-sub" id="stat-max-sub"></div>
+    </div>
+    <div class="stat stat-accent">
+      <div class="stat-label">最旺星期</div>
+      <div class="stat-value" id="stat-best">--</div>
+      <div class="stat-sub" id="stat-best-sub"></div>
+    </div>
+  </section>
+
+  <!-- 折线图 -->
+  <section class="card">
+    <div class="chart-head">
+      <h2 class="card-title">营业额折线图</h2>
+      <div class="tabs">
+        <button class="tab active" data-mode="date">按日期走势</button>
+        <button class="tab" data-mode="weekday">按星期分析</button>
+      </div>
+    </div>
+    <div id="chart"></div>
+    <p class="hint" id="chart-hint"></p>
+  </section>
+
+  <!-- 历史记录 -->
+  <section class="card">
+    <h2 class="card-title">历史记录</h2>
+    <table>
+      <thead>
+        <tr><th>日期</th><th>星期</th><th class="amt">营业额（元）</th><th></th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <p class="empty" id="empty-tip">还没有记录，先在上方录入今天卖了多少吧</p>
+  </section>
+
+</div>
+<div id="toast"></div>
+
+<script>
+/* ================= 基础配置 ================= */
+var WEEK_NAMES = ['周一','周二','周三','周四','周五','周六','周日'];
+var COLOR_MAIN = '#e07b39';   // 主题橙：按日期折线
+var COLOR_WEEK = '#4a9d6f';   // 辅助绿：按星期折线
+var COLOR_RED  = '#d94352';   // 周末高亮红
+
+var records = [];      // 全部记录 [{id, date, amount}]，按日期升序
+var chartMode = 'date';// 当前图表模式：date=按日期 / weekday=按星期
+var chart = echarts.init(document.getElementById('chart'));
+window.addEventListener('resize', function(){ chart.resize(); });
+
+/* ================= 工具函数 ================= */
+// 返回 0~6，0=周一 ... 6=周日
+function weekdayIndex(dateStr){
+  var d = new Date(dateStr + 'T00:00:00').getDay(); // 0=周日
+  return d === 0 ? 6 : d - 1;
+}
+// 金额格式化：最多保留 2 位小数并加千分位
+function fmt(n){
+  return parseFloat(Number(n).toFixed(2)).toLocaleString('zh-CN');
+}
+// 顶部提示气泡
+var toastTimer = null;
+function toast(msg){
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ t.classList.remove('show'); }, 2200);
+}
+
+/* ================= 数据读写 ================= */
+function loadRecords(){
+  fetch('/api/records')
+    .then(function(res){ return res.json(); })
+    .then(function(data){
+      records = data.records || [];
+      renderStats();
+      renderChart();
+      renderTable();
+    })
+    .catch(function(){ toast('加载失败，请确认服务正在运行'); });
+}
+
+function saveRecord(){
+  var date = document.getElementById('input-date').value;
+  var amount = document.getElementById('input-amount').value;
+  if(!date){ toast('请选择日期'); return; }
+  if(amount === '' || isNaN(Number(amount)) || Number(amount) < 0){
+    toast('请输入正确的金额'); return;
+  }
+  fetch('/api/records', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({date: date, amount: Number(amount)})
+  })
+    .then(function(res){ return res.json(); })
+    .then(function(data){
+      if(!data.ok){ toast(data.msg || '保存失败'); return; }
+      toast('已保存');
+      document.getElementById('input-amount').value = '';
+      loadRecords();
+    })
+    .catch(function(){ toast('保存失败'); });
+}
+
+function deleteRecord(id, date){
+  if(!confirm('确定删除 ' + date + ' 的记录吗？')) return;
+  fetch('/api/records/' + id, {method: 'DELETE'})
+    .then(function(){ loadRecords(); });
+}
+
+/* ================= 概览统计 ================= */
+function renderStats(){
+  var ids   = ['stat-total','stat-avg','stat-max','stat-best'];
+  var subIds= ['stat-total-sub','stat-avg-sub','stat-max-sub','stat-best-sub'];
+  var n = records.length;
+  if(!n){
+    ids.forEach(function(id){ document.getElementById(id).textContent = '--'; });
+    subIds.forEach(function(id){ document.getElementById(id).textContent = ''; });
+    return;
+  }
+  var total = 0, maxRec = records[0];
+  records.forEach(function(r){
+    total += r.amount;
+    if(r.amount > maxRec.amount) maxRec = r;
+  });
+  var avg = total / n;
+
+  // 按星期分组求平均，找出最旺的星期
+  var groups = [[],[],[],[],[],[],[]];
+  records.forEach(function(r){ groups[weekdayIndex(r.date)].push(r.amount); });
+  var bestIdx = -1, bestAvg = -1;
+  groups.forEach(function(g, i){
+    if(!g.length) return;
+    var a = g.reduce(function(s, v){ return s + v; }, 0) / g.length;
+    if(a > bestAvg){ bestAvg = a; bestIdx = i; }
+  });
+
+  document.getElementById('stat-total').innerHTML = fmt(total) + '<small>元</small>';
+  document.getElementById('stat-total-sub').textContent = '共 ' + n + ' 天';
+  document.getElementById('stat-avg').innerHTML = fmt(avg) + '<small>元</small>';
+  document.getElementById('stat-avg-sub').textContent = '按出摊天数计算';
+  document.getElementById('stat-max').innerHTML = fmt(maxRec.amount) + '<small>元</small>';
+  document.getElementById('stat-max-sub').textContent =
+    maxRec.date + ' ' + WEEK_NAMES[weekdayIndex(maxRec.date)];
+  document.getElementById('stat-best').textContent = bestIdx >= 0 ? WEEK_NAMES[bestIdx] : '--';
+  document.getElementById('stat-best-sub').textContent =
+    bestIdx >= 0 ? '平均 ' + fmt(bestAvg) + ' 元 / 天' : '';
+}
+
+/* ================= 折线图 ================= */
+function renderChart(){
+  var hint = document.getElementById('chart-hint');
+  if(!records.length){
+    hint.textContent = '';
+    chart.clear();
+    chart.setOption({
+      graphic: {elements: [{
+        type: 'text', left: 'center', top: 'middle',
+        style: {text: '暂无数据，先录入营业额吧', fill: '#b5a99a', font: '16px "Microsoft YaHei"'}
+      }]}
+    });
+    return;
+  }
+  hint.textContent = chartMode === 'date'
+    ? '红色圆点为周末，虚线为平均值；鼠标悬停可查看每天明细'
+    : '折线为各星期几的平均营业额；鼠标悬停可查看出摊天数与最高最低';
+  chart.setOption(chartMode === 'date' ? buildDateOption() : buildWeekdayOption(), true);
+}
+
+// 模式一：按日期走势
+function buildDateOption(){
+  var n = records.length;
+  var total = records.reduce(function(s, r){ return s + r.amount; }, 0);
+  var avg = total / n;
+
+  var xData = records.map(function(r){ return r.date; });
+  // 周末的数据点标红，方便观察“星期几”的影响
+  var seriesData = records.map(function(r){
+    if(weekdayIndex(r.date) >= 5){
+      return {value: r.amount, itemStyle: {color: COLOR_RED}};
+    }
+    return r.amount;
+  });
+
+  return {
+    grid: {left: 56, right: 24, top: 36, bottom: 56},
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#fff', borderColor: '#eee5d8',
+      textStyle: {color: '#3b332a'},
+      formatter: function(params){
+        var r = records[params[0].dataIndex];
+        return r.date + ' ' + WEEK_NAMES[weekdayIndex(r.date)]
+          + '<br/>营业额：<b>' + fmt(r.amount) + '</b> 元';
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: xData,
+      boundaryGap: false,
+      axisLine: {lineStyle: {color: '#d8cbb8'}},
+      axisTick: {show: false},
+      axisLabel: {
+        color: '#93877a', lineHeight: 16,
+        // 标签显示 "09-08" + 换行 + 星期
+        formatter: function(v){ return v.slice(5) + '\n' + WEEK_NAMES[weekdayIndex(v)]; }
+      }
+    },
+    yAxis: {
+      type: 'value', scale: true, name: '元',
+      nameTextStyle: {color: '#93877a'},
+      axisLabel: {color: '#93877a'},
+      splitLine: {lineStyle: {color: '#f0e8db'}}
+    },
+    series: [{
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 9,
+      color: COLOR_MAIN,
+      lineStyle: {width: 3},
+      data: seriesData,
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          {offset: 0, color: 'rgba(224,123,57,0.22)'},
+          {offset: 1, color: 'rgba(224,123,57,0.02)'}
+        ])
+      },
+      // 平均值虚线
+      markLine: {
+        silent: true,
+        symbol: 'none',
+        lineStyle: {type: 'dashed', color: '#b0a494'},
+        label: {formatter: '平均 ' + fmt(avg), position: 'insideEndTop', color: '#93877a'},
+        data: [{yAxis: avg}]
+      }
+    }]
+  };
+}
+
+// 模式二：按星期分析（各星期几的平均营业额）
+function buildWeekdayOption(){
+  // 按星期分组：0=周一 ... 6=周日
+  var groups = [[],[],[],[],[],[],[]];
+  records.forEach(function(r){ groups[weekdayIndex(r.date)].push(r.amount); });
+
+  var avgData = groups.map(function(g){
+    if(!g.length) return null; // 没出摊过的星期不画点
+    return Math.round(g.reduce(function(s, v){ return s + v; }, 0) / g.length * 100) / 100;
+  });
+
+  return {
+    grid: {left: 56, right: 24, top: 36, bottom: 34},
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#fff', borderColor: '#eee5d8',
+      textStyle: {color: '#3b332a'},
+      formatter: function(params){
+        var p = params[0];
+        var g = groups[p.dataIndex];
+        if(!g.length) return p.name + '<br/>暂无出摊记录';
+        var mx = Math.max.apply(null, g);
+        var mn = Math.min.apply(null, g);
+        return p.name + '（出摊 ' + g.length + ' 天）'
+          + '<br/>平均：<b>' + fmt(p.value) + '</b> 元'
+          + '<br/>最高 ' + fmt(mx) + ' 元 / 最低 ' + fmt(mn) + ' 元';
+      }
+    },
+    xAxis: {
+      type: 'category',
+      data: WEEK_NAMES,
+      axisLine: {lineStyle: {color: '#d8cbb8'}},
+      axisTick: {show: false},
+      axisLabel: {
+        color: '#3b332a', fontSize: 13,
+        // 周六周日标红
+        formatter: function(v){
+          return (v === '周六' || v === '周日') ? '{wk|' + v + '}' : v;
+        },
+        rich: {wk: {color: COLOR_RED, fontWeight: 'bold', fontSize: 13}}
+      }
+    },
+    yAxis: {
+      type: 'value', scale: true, name: '元',
+      nameTextStyle: {color: '#93877a'},
+      axisLabel: {color: '#93877a'},
+      splitLine: {lineStyle: {color: '#f0e8db'}}
+    },
+    series: [{
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 11,
+      color: COLOR_WEEK,
+      lineStyle: {width: 3},
+      connectNulls: false,
+      data: avgData,
+      // 每个点上方显示平均值
+      label: {
+        show: true, color: '#4a9d6f', fontWeight: 'bold',
+        formatter: function(p){ return p.value == null ? '' : fmt(p.value); }
+      },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          {offset: 0, color: 'rgba(74,157,111,0.18)'},
+          {offset: 1, color: 'rgba(74,157,111,0.02)'}
+        ])
+      }
+    }]
+  };
+}
+
+/* ================= 历史记录表格 ================= */
+function renderTable(){
+  var tbody = document.getElementById('tbody');
+  var emptyTip = document.getElementById('empty-tip');
+  tbody.innerHTML = '';
+  if(!records.length){
+    emptyTip.style.display = 'block';
+    return;
+  }
+  emptyTip.style.display = 'none';
+
+  records.slice().reverse().forEach(function(r){
+    var wk = weekdayIndex(r.date);
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + r.date + '</td>' +
+      '<td>' + (wk >= 5
+        ? '<span class="wk-badge">' + WEEK_NAMES[wk] + '</span>'
+        : WEEK_NAMES[wk]) + '</td>' +
+      '<td class="amt">' + fmt(r.amount) + '</td>' +
+      '<td class="op"><button class="del" data-id="' + r.id + '" data-date="' + r.date + '">删除</button></td>';
+    tbody.appendChild(tr);
+  });
+}
+
+/* ================= 事件绑定 ================= */
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(x){ x.classList.remove('active'); });
+    t.classList.add('active');
+    chartMode = t.dataset.mode;
+    renderChart();
+  });
+});
+
+document.getElementById('btn-save').addEventListener('click', saveRecord);
+document.getElementById('input-amount').addEventListener('keydown', function(e){
+  if(e.key === 'Enter') saveRecord();
+});
+
+document.getElementById('tbody').addEventListener('click', function(e){
+  var btn = e.target.closest('.del');
+  if(btn) deleteRecord(btn.dataset.id, btn.dataset.date);
+});
+
+/* ================= 初始化 ================= */
+(function(){
+  // 日期默认为今天（按本地时区）
+  var now = new Date();
+  var today = now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-'
+    + String(now.getDate()).padStart(2, '0');
+  document.getElementById('input-date').value = today;
+
+  loadRecords();
+})();
+</script>
+</body>
+</html>
