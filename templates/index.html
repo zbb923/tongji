@@ -116,6 +116,30 @@ td.op{text-align:right}
 .del:hover{background:#fdeaea;color:#c03540}
 .empty{text-align:center;color:var(--ink2);font-size:14px;padding:24px 0;display:none}
 
+/* AI 智能分析 */
+#btn-ai{padding:9px 22px;font-size:13px}
+#btn-ai:disabled{background:#d8c9b6;cursor:not-allowed}
+.ai-result{margin-top:14px;min-height:60px}
+.ai-placeholder{
+  color:var(--ink2);font-size:13px;text-align:center;padding:26px 0;
+  background:#faf6ee;border-radius:12px;border:1px dashed #e3d8c6;
+}
+.ai-loading{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  color:var(--ink2);font-size:14px;padding:26px 0;
+}
+.spinner{
+  width:18px;height:18px;border:3px solid #eee0cc;border-top-color:var(--accent);
+  border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ai-result .md-h{font-size:14px;font-weight:700;margin:16px 0 6px}
+.ai-result p{font-size:14px;line-height:1.9;margin:8px 0;color:#5a5145}
+.ai-result ul{margin:6px 0;padding-left:22px}
+.ai-result li{font-size:14px;line-height:1.9;color:#5a5145;margin:4px 0}
+.ai-result strong{color:var(--accent-dark)}
+.ai-error{background:#fdeaea;color:#c03540;font-size:13px;padding:12px 16px;border-radius:10px}
+
 /* 提示气泡 */
 #toast{
   position:fixed;left:50%;top:24px;z-index:99;
@@ -198,6 +222,18 @@ td.op{text-align:right}
     </div>
     <div id="chart"></div>
     <p class="hint" id="chart-hint"></p>
+  </section>
+
+  <!-- AI 智能分析 -->
+  <section class="card">
+    <div class="chart-head">
+      <h2 class="card-title">AI 智能分析</h2>
+      <button class="btn" id="btn-ai">开始分析</button>
+    </div>
+    <p class="hint" style="margin-top:0">由 DeepSeek 结合当前所有数据，分析营业额与日期、星期之间的关系，约需 10-30 秒</p>
+    <div id="ai-result" class="ai-result">
+      <p class="ai-placeholder">点击"开始分析"，AI 会给出走势解读、最旺最淡的星期和实用建议</p>
+    </div>
   </section>
 
   <!-- 历史记录 -->
@@ -515,6 +551,73 @@ function renderTable(){
   });
 }
 
+/* ================= AI 智能分析 ================= */
+// 轻量 markdown 渲染：支持标题、加粗、无序/有序列表、段落
+function renderMd(text){
+  var html = '', inList = false;
+  function esc(s){
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function inline(s){
+    return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  }
+  text.split('\n').forEach(function(raw){
+    var line = raw.trim();
+    if(!line){
+      if(inList){ html += '</ul>'; inList = false; }
+      return;
+    }
+    // 列表项（- xxx / * xxx / 1. xxx）
+    if(/^([-*]|\d+\.)\s+/.test(line)){
+      if(!inList){ html += '<ul>'; inList = true; }
+      html += '<li>' + inline(line.replace(/^([-*]|\d+\.)\s+/, '')) + '</li>';
+      return;
+    }
+    if(inList){ html += '</ul>'; inList = false; }
+    // 标题（# ~ ####）
+    var h = line.match(/^#{1,4}\s+(.*)$/);
+    if(h){
+      html += '<div class="md-h">' + inline(h[1]) + '</div>';
+    } else {
+      html += '<p>' + inline(line) + '</p>';
+    }
+  });
+  if(inList) html += '</ul>';
+  return html;
+}
+
+var aiBusy = false;
+function runAiAnalysis(){
+  if(aiBusy) return;
+  if(!records.length){ toast('还没有数据，先录入营业额'); return; }
+
+  aiBusy = true;
+  var btn = document.getElementById('btn-ai');
+  var box = document.getElementById('ai-result');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+  box.innerHTML =
+    '<div class="ai-loading"><span class="spinner"></span>DeepSeek 正在分析，请稍等...</div>';
+
+  fetch('/api/ai-analysis', {method: 'POST'})
+    .then(function(res){ return res.json(); })
+    .then(function(data){
+      if(data.ok){
+        box.innerHTML = renderMd(data.content);
+      } else {
+        box.innerHTML = '<p class="ai-error">' + (data.msg || '分析失败') + '</p>';
+      }
+    })
+    .catch(function(){
+      box.innerHTML = '<p class="ai-error">网络错误，请稍后重试</p>';
+    })
+    .finally(function(){
+      aiBusy = false;
+      btn.disabled = false;
+      btn.textContent = '重新分析';
+    });
+}
+
 /* ================= 事件绑定 ================= */
 document.querySelectorAll('.tab').forEach(function(t){
   t.addEventListener('click', function(){
@@ -529,6 +632,7 @@ document.getElementById('btn-save').addEventListener('click', saveRecord);
 document.getElementById('input-amount').addEventListener('keydown', function(e){
   if(e.key === 'Enter') saveRecord();
 });
+document.getElementById('btn-ai').addEventListener('click', runAiAnalysis);
 
 document.getElementById('tbody').addEventListener('click', function(e){
   var btn = e.target.closest('.del');

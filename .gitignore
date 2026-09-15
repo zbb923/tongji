@@ -1,21 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-venv/
-.venv/
-env/
+# 密钥配置，绝不提交
+.env
 
-# 数据库（包含真实营业数据，不上传）
+# 本地数据库
 data.db
-*.db
 
-# IDE
-.idea/
-.vscode/
-
-# 系统
-.DS_Store
-Thumbs.db
-
-# 日志
-*.log
+# Python 缓存
+__pycache__/
