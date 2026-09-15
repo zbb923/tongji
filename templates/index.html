@@ -478,7 +478,7 @@ function renderChart(){
     return;
   }
   hint.textContent = chartMode === 'date'
-    ? '红点为周末；灰"休"为休息日（折线断开）；虚线为出摊日平均'
+    ? '红点为周末；灰点为休息日（按 0 元连线）；虚线为出摊日平均'
     : '折线为各星期几的平均营业额（仅出摊日）；鼠标悬停可查看出摊天数与最高最低';
   chart.setOption(chartMode === 'date' ? buildDateOption() : buildWeekdayOption(), true);
 }
@@ -493,9 +493,11 @@ function buildDateOption(){
   records.forEach(function(r){ if(r.is_rest) restMap[r.date] = 1; });
 
   var xData = records.map(function(r){ return r.date; });
-  // 休息日值为 null 折线断开；周末的数据点标红
+  // 休息日按 0 元连线（灰色点）；周末的数据点标红
   var seriesData = records.map(function(r){
-    if(r.is_rest) return null;
+    if(r.is_rest){
+      return {value: 0, itemStyle: {color: '#b9ab99'}};
+    }
     if(weekdayIndex(r.date) >= 5){
       return {value: r.amount, itemStyle: {color: COLOR_RED}};
     }

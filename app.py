@@ -39,12 +39,14 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS records (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     date       TEXT    UNIQUE NOT NULL,   -- 日期，格式 YYYY-MM-DD
-                    amount     REAL,                       -- 当天营业额（元）；休息日为空
+                    amount     REAL,                       -- 当天营业额（元）；休息日固定为 0
                     is_rest    INTEGER NOT NULL DEFAULT 0, -- 1=休息日（未出摊）
                     created_at TEXT    DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            # 兼容历史数据：早期休息日金额可能为空，统一记为 0
+            conn.execute("UPDATE records SET amount = 0 WHERE is_rest = 1 AND amount IS NULL")
         # 老库迁移：没有 is_rest 列时重建表（金额列需允许为空）
         cols = [c[1] for c in conn.execute("PRAGMA table_info(records)")]
         if "is_rest" not in cols:
@@ -75,6 +77,14 @@ def index():
     return render_template("index.html")
 
 
+@app.after_request
+def no_cache_api(resp):
+    """API 响应禁用浏览器缓存，保证每次拿到最新数据"""
+    if request.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/api/records", methods=["GET"])
 def list_records():
     """全部记录，按日期升序返回"""
@@ -101,7 +111,7 @@ def save_record():
         return jsonify({"ok": False, "msg": "日期格式不正确"}), 400
 
     if is_rest:
-        amount = None  # 休息日不记金额
+        amount = 0  # 休息日按 0 元记录，折线图保持连贯
     else:
         amount = data.get("amount")
         try:
