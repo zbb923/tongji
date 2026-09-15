@@ -293,6 +293,7 @@ var COLOR_WEEK = '#4a9d6f';   // 辅助绿：按星期折线
 var COLOR_RED  = '#d94352';   // 周末高亮红
 
 var records = [];      // 全部记录 [{id, date, amount, is_rest}]，按日期升序
+var days = [];         // 补全后的连续日期序列（无记录的日期默认休息），用于图表和统计
 var chartMode = 'date';// 当前图表模式：date=按日期 / weekday=按星期
 var chart = echarts.init(document.getElementById('chart'));
 window.addEventListener('resize', function(){ chart.resize(); });
@@ -318,11 +319,39 @@ function toast(msg){
 }
 
 /* ================= 数据读写 ================= */
+// 生成连续日期序列：从第一条记录到今天；没有记录的日期默认视为休息日。
+// 今天没有记录则不显示今天（等你录入了才出现）
+function buildDays(){
+  if(!records.length) return [];
+  var map = {};
+  records.forEach(function(r){ map[r.date] = r; });
+  function key(d){
+    return d.getFullYear() + '-'
+      + String(d.getMonth() + 1).padStart(2, '0') + '-'
+      + String(d.getDate()).padStart(2, '0');
+  }
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var todayKey = key(today);
+  var out = [];
+  var cur = new Date(records[0].date + 'T00:00:00');
+  while(cur <= today){
+    var k = key(cur);
+    if(map[k]){
+      out.push(map[k]);
+    } else if(k !== todayKey){
+      out.push({date: k, amount: 0, is_rest: 1}); // 默认休息日（未入库）
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
 function loadRecords(){
   fetch('/api/records')
     .then(function(res){ return res.json(); })
     .then(function(data){
       records = data.records || [];
+      days = buildDays();
       renderStats();
       renderChart();
       renderTable();
@@ -411,14 +440,14 @@ function deleteRecord(id, date){
 function renderStats(){
   var ids   = ['stat-total','stat-avg','stat-max','stat-best','stat-att'];
   var subIds= ['stat-total-sub','stat-avg-sub','stat-max-sub','stat-best-sub','stat-att-sub'];
-  if(!records.length){
+  if(!days.length){
     ids.forEach(function(id){ document.getElementById(id).textContent = '--'; });
     subIds.forEach(function(id){ document.getElementById(id).textContent = ''; });
     return;
   }
-  // 只统计真实出摊日
-  var stall = records.filter(function(r){ return !r.is_rest; });
-  var restCnt = records.length - stall.length;
+  // 只统计真实出摊日；无记录的日期已按默认休息补进 days
+  var stall = days.filter(function(r){ return !r.is_rest; });
+  var restCnt = days.length - stall.length;
   var total = 0, maxRec = null;
   stall.forEach(function(r){
     total += r.amount;
@@ -444,10 +473,10 @@ function renderStats(){
     document.getElementById('stat-max-sub').textContent = '';
   }
 
-  // 出勤率 = 出摊天数 / 有记录的天数
-  var att = Math.round(stall.length / records.length * 100);
+  // 出勤率 = 出摊天数 / 统计范围内的日历天数
+  var att = Math.round(stall.length / days.length * 100);
   document.getElementById('stat-att').innerHTML = att + '<small>%</small>';
-  document.getElementById('stat-att-sub').textContent = '共记录 ' + records.length + ' 天';
+  document.getElementById('stat-att-sub').textContent = '统计范围 ' + days.length + ' 天';
 
   // 按星期分组求平均（仅出摊日），找出最旺的星期
   var groups = [[],[],[],[],[],[],[]];
@@ -478,23 +507,23 @@ function renderChart(){
     return;
   }
   hint.textContent = chartMode === 'date'
-    ? '红点为周末；灰点为休息日（按 0 元连线）；虚线为出摊日平均'
+    ? '日期连续显示，无记录的日期默认休息（灰点 0 元）；红点为周末；虚线为出摊日平均'
     : '折线为各星期几的平均营业额（仅出摊日）；鼠标悬停可查看出摊天数与最高最低';
   chart.setOption(chartMode === 'date' ? buildDateOption() : buildWeekdayOption(), true);
 }
 
-// 模式一：按日期走势
+// 模式一：按日期走势（日期连续，无记录的日期默认休息）
 function buildDateOption(){
-  var stall = records.filter(function(r){ return !r.is_rest; });
+  var stall = days.filter(function(r){ return !r.is_rest; });
   var total = stall.reduce(function(s, r){ return s + r.amount; }, 0);
   var avg = stall.length ? total / stall.length : 0;
   // 休息日集合，用于 x 轴打"休"标记
   var restMap = {};
-  records.forEach(function(r){ if(r.is_rest) restMap[r.date] = 1; });
+  days.forEach(function(r){ if(r.is_rest) restMap[r.date] = 1; });
 
-  var xData = records.map(function(r){ return r.date; });
+  var xData = days.map(function(r){ return r.date; });
   // 休息日按 0 元连线（灰色点）；周末的数据点标红
-  var seriesData = records.map(function(r){
+  var seriesData = days.map(function(r){
     if(r.is_rest){
       return {value: 0, itemStyle: {color: '#b9ab99'}};
     }
@@ -511,7 +540,7 @@ function buildDateOption(){
       backgroundColor: '#fff', borderColor: '#eee5d8',
       textStyle: {color: '#3b332a'},
       formatter: function(params){
-        var r = records[params[0].dataIndex];
+        var r = days[params[0].dataIndex];
         if(r.is_rest) return r.date + ' ' + WEEK_NAMES[weekdayIndex(r.date)] + '<br/>休息，未出摊';
         return r.date + ' ' + WEEK_NAMES[weekdayIndex(r.date)]
           + '<br/>营业额：<b>' + fmt(r.amount) + '</b> 元';
@@ -569,10 +598,10 @@ function buildDateOption(){
 
 // 模式二：按星期分析（各星期几的平均营业额，仅出摊日）
 function buildWeekdayOption(){
-  // 按星期分组：0=周一 ... 6=周日；休息日单独计数
+  // 按星期分组：0=周一 ... 6=周日；休息日单独计数（含默认休息日）
   var groups = [[],[],[],[],[],[],[]];
   var restCnt = [0,0,0,0,0,0,0];
-  records.forEach(function(r){
+  days.forEach(function(r){
     var i = weekdayIndex(r.date);
     if(r.is_rest) restCnt[i]++;
     else groups[i].push(r.amount);

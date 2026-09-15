@@ -4,7 +4,7 @@ import os
 import sqlite3
 import threading
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
@@ -168,18 +168,34 @@ def ai_analysis():
     if len(stall_days) < 3:
         return jsonify({"ok": False, "msg": "出摊数据还太少，至少录入 3 天营业额再试试"}), 400
 
-    # 每日明细（休息日单独标注）
+    # 补全连续日期：从第一条记录到今天；没有记录的日期默认视为休息日。
+    # 今天没有记录则不算（摊主可能还没收摊录账）
+    rec_map = {r["date"]: r for r in rows}
+    today = datetime.now().strftime("%Y-%m-%d")
+    cur = datetime.strptime(rows[0]["date"], "%Y-%m-%d")
+    end = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    days = []
+    while cur <= end:
+        key = cur.strftime("%Y-%m-%d")
+        if key in rec_map:
+            days.append(dict(rec_map[key]))  # 统一转 dict，方便后面 .get()
+        elif key != today:
+            days.append({"date": key, "amount": 0, "is_rest": 1, "auto": 1})
+        cur += timedelta(days=1)
+
+    # 每日明细（休息日单独标注，自动补全的标"未记录"）
     daily_text = "\n".join(
-        f"{r['date']} {weekday_cn(r['date'])} "
-        + ("休息" if r["is_rest"] else f"{r['amount']:.1f} 元")
-        for r in rows
+        f"{d['date']} {weekday_cn(d['date'])} "
+        + (("休息（未记录）" if d.get("auto") else "休息") if d["is_rest"]
+           else f"{d['amount']:.1f} 元")
+        for d in days
     )
 
-    # 按星期汇总（平均只算出摊日）
+    # 按星期汇总（平均只算出摊日，休息含默认休息日）
     summary_lines = []
     for name in WEEK_CN:
-        amounts = [r["amount"] for r in stall_days if weekday_cn(r["date"]) == name]
-        rest_cnt = sum(1 for r in rows if r["is_rest"] and weekday_cn(r["date"]) == name)
+        amounts = [d["amount"] for d in days if not d["is_rest"] and weekday_cn(d["date"]) == name]
+        rest_cnt = sum(1 for d in days if d["is_rest"] and weekday_cn(d["date"]) == name)
         if not amounts:
             summary_lines.append(f"{name}：未出摊" + (f"（休息 {rest_cnt} 天）" if rest_cnt else ""))
             continue
@@ -192,7 +208,8 @@ def ai_analysis():
             line += f"（另有休息 {rest_cnt} 天）"
         summary_lines.append(line)
 
-    total = sum(r["amount"] for r in stall_days)
+    total = sum(d["amount"] for d in days if not d["is_rest"])
+    rest_total = len(days) - len(stall_days)
 
     system_prompt = (
         "你是一位接地气的数据分析助手，服务对象是一位每天出摊卖饭团的摊主。"
@@ -205,8 +222,9 @@ def ai_analysis():
         "金额保留 1 位小数；总长度 350 字以内；数据不足以得出结论时要明说，不要编造。"
     )
     user_prompt = (
-        f"统计周期：{rows[0]['date']} 至 {rows[-1]['date']}，共 {len(rows)} 天记录"
-        f"（出摊 {len(stall_days)} 天、休息 {len(rows) - len(stall_days)} 天），"
+        f"统计周期：{days[0]['date']} 至 {days[-1]['date']}，共 {len(days)} 天"
+        f"（出摊 {len(stall_days)} 天、休息 {rest_total} 天；"
+        f"没有记录的日期已默认按休息日处理，明细中标注为'休息（未记录）'），"
         f"累计营业额 {total:.1f} 元。\n\n"
         f"按星期汇总：\n" + "\n".join(summary_lines) + f"\n\n每日明细：\n{daily_text}"
     )
