@@ -69,8 +69,29 @@ body{
 .btn:hover{background:var(--accent-dark)}
 .hint{font-size:12px;color:var(--ink2);margin-top:10px}
 
+/* 日期快捷切换 & 休息日 */
+.date-nav{display:flex;gap:6px;align-items:stretch}
+.nav-btn{
+  width:36px;border:1px solid var(--line);border-radius:10px;
+  background:#fdfbf7;color:var(--ink2);font-size:20px;cursor:pointer;
+}
+.nav-btn:hover{border-color:var(--accent);color:var(--accent-dark)}
+.rest-toggle{
+  display:flex;align-items:center;gap:8px;height:42px;padding:0 16px;margin-bottom:1px;
+  border:1px solid var(--line);border-radius:10px;background:#fdfbf7;
+  font-size:14px;color:var(--ink2);cursor:pointer;user-select:none;white-space:nowrap;
+}
+.rest-toggle input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;margin:0}
+.rest-toggle.on{border-color:var(--accent);color:var(--accent-dark);background:#fdf6ee}
+.field input:disabled{background:#f1e9dc;color:var(--ink2);cursor:not-allowed}
+.link-today{color:var(--accent-dark);cursor:pointer}
+.link-today:hover{text-decoration:underline}
+.rest-badge{background:#f1e9dc;color:#b9ab99;font-size:12px;padding:2px 10px;border-radius:6px}
+tr.rest-row td{color:#b9ab99}
+tr.rest-row .wk-badge{opacity:.55}
+
 /* 统计卡片 */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px;margin-bottom:18px}
 .stat{
   background:var(--card);border-radius:var(--radius);
   box-shadow:var(--shadow);padding:16px 18px;
@@ -155,6 +176,7 @@ td.op{text-align:right}
   .form-row{gap:10px}
   .field{flex:1;min-width:130px}
   .field input{width:100%}
+  .date-nav input{width:auto;flex:1;min-width:0}
   .form-row .btn{width:100%;padding:11px 0}
 }
 </style>
@@ -174,17 +196,24 @@ td.op{text-align:right}
   <section class="card">
     <h2 class="card-title">录入营业额</h2>
     <div class="form-row">
-      <label class="field">
+      <div class="field">
         <span>日期</span>
-        <input type="date" id="input-date">
-      </label>
+        <div class="date-nav">
+          <button type="button" class="nav-btn" id="btn-prev" title="上一天">‹</button>
+          <input type="date" id="input-date">
+          <button type="button" class="nav-btn" id="btn-next" title="下一天">›</button>
+        </div>
+      </div>
       <label class="field">
         <span>营业额（元）</span>
         <input type="number" id="input-amount" step="0.01" min="0" placeholder="如 358.5">
       </label>
+      <label class="rest-toggle" id="rest-toggle">
+        <input type="checkbox" id="input-rest">休息日
+      </label>
       <button class="btn" id="btn-save">保存</button>
     </div>
-    <p class="hint">同一天重复保存会覆盖更新；金额可以带小数</p>
+    <p class="hint">同一天重复保存会覆盖；切换日期自动带出已有记录；<span class="link-today" id="link-today">回到今天</span></p>
   </section>
 
   <!-- 概览统计 -->
@@ -195,7 +224,7 @@ td.op{text-align:right}
       <div class="stat-sub" id="stat-total-sub"></div>
     </div>
     <div class="stat">
-      <div class="stat-label">平均每天</div>
+      <div class="stat-label">平均每次出摊</div>
       <div class="stat-value" id="stat-avg">--</div>
       <div class="stat-sub" id="stat-avg-sub"></div>
     </div>
@@ -203,6 +232,11 @@ td.op{text-align:right}
       <div class="stat-label">单日最高</div>
       <div class="stat-value" id="stat-max">--</div>
       <div class="stat-sub" id="stat-max-sub"></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">出勤率</div>
+      <div class="stat-value" id="stat-att">--</div>
+      <div class="stat-sub" id="stat-att-sub"></div>
     </div>
     <div class="stat stat-accent">
       <div class="stat-label">最旺星期</div>
@@ -258,7 +292,7 @@ var COLOR_MAIN = '#e07b39';   // 主题橙：按日期折线
 var COLOR_WEEK = '#4a9d6f';   // 辅助绿：按星期折线
 var COLOR_RED  = '#d94352';   // 周末高亮红
 
-var records = [];      // 全部记录 [{id, date, amount}]，按日期升序
+var records = [];      // 全部记录 [{id, date, amount, is_rest}]，按日期升序
 var chartMode = 'date';// 当前图表模式：date=按日期 / weekday=按星期
 var chart = echarts.init(document.getElementById('chart'));
 window.addEventListener('resize', function(){ chart.resize(); });
@@ -292,27 +326,76 @@ function loadRecords(){
       renderStats();
       renderChart();
       renderTable();
+      prefillFromRecord();
     })
     .catch(function(){ toast('加载失败，请确认服务正在运行'); });
 }
 
+// 休息日开关：勾选后禁用金额输入
+function syncRestUI(){
+  var on = document.getElementById('input-rest').checked;
+  var amountEl = document.getElementById('input-amount');
+  amountEl.disabled = on;
+  if(on) amountEl.value = '';
+  document.getElementById('rest-toggle').classList.toggle('on', on);
+}
+
+// 根据当前选中日期，把已有记录带回表单（方便修改/补录）
+function findRecord(date){
+  for(var i = 0; i < records.length; i++){
+    if(records[i].date === date) return records[i];
+  }
+  return null;
+}
+function prefillFromRecord(){
+  var r = findRecord(document.getElementById('input-date').value);
+  var amountEl = document.getElementById('input-amount');
+  var restEl = document.getElementById('input-rest');
+  if(r && r.is_rest){
+    restEl.checked = true;
+    amountEl.value = '';
+  } else {
+    restEl.checked = false;
+    amountEl.value = r ? r.amount : '';
+  }
+  syncRestUI();
+}
+
+// 上一天 / 下一天
+function shiftDate(days){
+  var el = document.getElementById('input-date');
+  if(!el.value) return;
+  var d = new Date(el.value + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  el.value = d.getFullYear() + '-'
+    + String(d.getMonth() + 1).padStart(2, '0') + '-'
+    + String(d.getDate()).padStart(2, '0');
+  prefillFromRecord();
+}
+
 function saveRecord(){
   var date = document.getElementById('input-date').value;
+  var rest = document.getElementById('input-rest').checked;
   var amount = document.getElementById('input-amount').value;
   if(!date){ toast('请选择日期'); return; }
-  if(amount === '' || isNaN(Number(amount)) || Number(amount) < 0){
-    toast('请输入正确的金额'); return;
+  var body = {date: date};
+  if(rest){
+    body.is_rest = 1;              // 休息日：不记金额
+  } else {
+    if(amount === '' || isNaN(Number(amount)) || Number(amount) < 0){
+      toast('请输入正确的金额，或勾选"休息日"'); return;
+    }
+    body.amount = Number(amount);
   }
   fetch('/api/records', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({date: date, amount: Number(amount)})
+    body: JSON.stringify(body)
   })
     .then(function(res){ return res.json(); })
     .then(function(data){
       if(!data.ok){ toast(data.msg || '保存失败'); return; }
-      toast('已保存');
-      document.getElementById('input-amount').value = '';
+      toast(body.is_rest ? '已记录为休息日' : '已保存');
       loadRecords();
     })
     .catch(function(){ toast('保存失败'); });
@@ -326,41 +409,58 @@ function deleteRecord(id, date){
 
 /* ================= 概览统计 ================= */
 function renderStats(){
-  var ids   = ['stat-total','stat-avg','stat-max','stat-best'];
-  var subIds= ['stat-total-sub','stat-avg-sub','stat-max-sub','stat-best-sub'];
-  var n = records.length;
-  if(!n){
+  var ids   = ['stat-total','stat-avg','stat-max','stat-best','stat-att'];
+  var subIds= ['stat-total-sub','stat-avg-sub','stat-max-sub','stat-best-sub','stat-att-sub'];
+  if(!records.length){
     ids.forEach(function(id){ document.getElementById(id).textContent = '--'; });
     subIds.forEach(function(id){ document.getElementById(id).textContent = ''; });
     return;
   }
-  var total = 0, maxRec = records[0];
-  records.forEach(function(r){
+  // 只统计真实出摊日
+  var stall = records.filter(function(r){ return !r.is_rest; });
+  var restCnt = records.length - stall.length;
+  var total = 0, maxRec = null;
+  stall.forEach(function(r){
     total += r.amount;
-    if(r.amount > maxRec.amount) maxRec = r;
+    if(!maxRec || r.amount > maxRec.amount) maxRec = r;
   });
-  var avg = total / n;
 
-  // 按星期分组求平均，找出最旺的星期
+  if(stall.length){
+    document.getElementById('stat-total').innerHTML = fmt(total) + '<small>元</small>';
+    document.getElementById('stat-total-sub').textContent =
+      '出摊 ' + stall.length + ' 天 · 休息 ' + restCnt + ' 天';
+    var avg = total / stall.length;
+    document.getElementById('stat-avg').innerHTML = fmt(avg) + '<small>元</small>';
+    document.getElementById('stat-avg-sub').textContent = '仅按出摊日计算';
+    document.getElementById('stat-max').innerHTML = fmt(maxRec.amount) + '<small>元</small>';
+    document.getElementById('stat-max-sub').textContent =
+      maxRec.date + ' ' + WEEK_NAMES[weekdayIndex(maxRec.date)];
+  } else {
+    ['stat-total','stat-avg','stat-max'].forEach(function(id){
+      document.getElementById(id).textContent = '--';
+    });
+    document.getElementById('stat-total-sub').textContent = '全部是休息日';
+    document.getElementById('stat-avg-sub').textContent = '';
+    document.getElementById('stat-max-sub').textContent = '';
+  }
+
+  // 出勤率 = 出摊天数 / 有记录的天数
+  var att = Math.round(stall.length / records.length * 100);
+  document.getElementById('stat-att').innerHTML = att + '<small>%</small>';
+  document.getElementById('stat-att-sub').textContent = '共记录 ' + records.length + ' 天';
+
+  // 按星期分组求平均（仅出摊日），找出最旺的星期
   var groups = [[],[],[],[],[],[],[]];
-  records.forEach(function(r){ groups[weekdayIndex(r.date)].push(r.amount); });
+  stall.forEach(function(r){ groups[weekdayIndex(r.date)].push(r.amount); });
   var bestIdx = -1, bestAvg = -1;
   groups.forEach(function(g, i){
     if(!g.length) return;
     var a = g.reduce(function(s, v){ return s + v; }, 0) / g.length;
     if(a > bestAvg){ bestAvg = a; bestIdx = i; }
   });
-
-  document.getElementById('stat-total').innerHTML = fmt(total) + '<small>元</small>';
-  document.getElementById('stat-total-sub').textContent = '共 ' + n + ' 天';
-  document.getElementById('stat-avg').innerHTML = fmt(avg) + '<small>元</small>';
-  document.getElementById('stat-avg-sub').textContent = '按出摊天数计算';
-  document.getElementById('stat-max').innerHTML = fmt(maxRec.amount) + '<small>元</small>';
-  document.getElementById('stat-max-sub').textContent =
-    maxRec.date + ' ' + WEEK_NAMES[weekdayIndex(maxRec.date)];
   document.getElementById('stat-best').textContent = bestIdx >= 0 ? WEEK_NAMES[bestIdx] : '--';
   document.getElementById('stat-best-sub').textContent =
-    bestIdx >= 0 ? '平均 ' + fmt(bestAvg) + ' 元 / 天' : '';
+    bestIdx >= 0 ? '平均 ' + fmt(bestAvg) + ' 元 / 次' : '';
 }
 
 /* ================= 折线图 ================= */
@@ -378,20 +478,24 @@ function renderChart(){
     return;
   }
   hint.textContent = chartMode === 'date'
-    ? '红色圆点为周末，虚线为平均值；鼠标悬停可查看每天明细'
-    : '折线为各星期几的平均营业额；鼠标悬停可查看出摊天数与最高最低';
+    ? '红点为周末；灰"休"为休息日（折线断开）；虚线为出摊日平均'
+    : '折线为各星期几的平均营业额（仅出摊日）；鼠标悬停可查看出摊天数与最高最低';
   chart.setOption(chartMode === 'date' ? buildDateOption() : buildWeekdayOption(), true);
 }
 
 // 模式一：按日期走势
 function buildDateOption(){
-  var n = records.length;
-  var total = records.reduce(function(s, r){ return s + r.amount; }, 0);
-  var avg = total / n;
+  var stall = records.filter(function(r){ return !r.is_rest; });
+  var total = stall.reduce(function(s, r){ return s + r.amount; }, 0);
+  var avg = stall.length ? total / stall.length : 0;
+  // 休息日集合，用于 x 轴打"休"标记
+  var restMap = {};
+  records.forEach(function(r){ if(r.is_rest) restMap[r.date] = 1; });
 
   var xData = records.map(function(r){ return r.date; });
-  // 周末的数据点标红，方便观察“星期几”的影响
+  // 休息日值为 null 折线断开；周末的数据点标红
   var seriesData = records.map(function(r){
+    if(r.is_rest) return null;
     if(weekdayIndex(r.date) >= 5){
       return {value: r.amount, itemStyle: {color: COLOR_RED}};
     }
@@ -406,6 +510,7 @@ function buildDateOption(){
       textStyle: {color: '#3b332a'},
       formatter: function(params){
         var r = records[params[0].dataIndex];
+        if(r.is_rest) return r.date + ' ' + WEEK_NAMES[weekdayIndex(r.date)] + '<br/>休息，未出摊';
         return r.date + ' ' + WEEK_NAMES[weekdayIndex(r.date)]
           + '<br/>营业额：<b>' + fmt(r.amount) + '</b> 元';
       }
@@ -418,8 +523,14 @@ function buildDateOption(){
       axisTick: {show: false},
       axisLabel: {
         color: '#93877a', lineHeight: 16,
-        // 标签显示 "09-08" + 换行 + 星期
-        formatter: function(v){ return v.slice(5) + '\n' + WEEK_NAMES[weekdayIndex(v)]; }
+        // 标签显示 "09-08" + 换行 + 星期；休息日显示灰色"休"
+        formatter: function(v){
+          return v.slice(5) + '\n' + (restMap[v] ? '{rk|休}' : '{a|' + WEEK_NAMES[weekdayIndex(v)] + '}');
+        },
+        rich: {
+          a: {color: '#93877a', lineHeight: 16},
+          rk: {color: '#b9ab99', backgroundColor: '#f1e9dc', padding: [1, 6], borderRadius: 4, lineHeight: 16}
+        }
       }
     },
     yAxis: {
@@ -454,11 +565,16 @@ function buildDateOption(){
   };
 }
 
-// 模式二：按星期分析（各星期几的平均营业额）
+// 模式二：按星期分析（各星期几的平均营业额，仅出摊日）
 function buildWeekdayOption(){
-  // 按星期分组：0=周一 ... 6=周日
+  // 按星期分组：0=周一 ... 6=周日；休息日单独计数
   var groups = [[],[],[],[],[],[],[]];
-  records.forEach(function(r){ groups[weekdayIndex(r.date)].push(r.amount); });
+  var restCnt = [0,0,0,0,0,0,0];
+  records.forEach(function(r){
+    var i = weekdayIndex(r.date);
+    if(r.is_rest) restCnt[i]++;
+    else groups[i].push(r.amount);
+  });
 
   var avgData = groups.map(function(g){
     if(!g.length) return null; // 没出摊过的星期不画点
@@ -474,10 +590,12 @@ function buildWeekdayOption(){
       formatter: function(params){
         var p = params[0];
         var g = groups[p.dataIndex];
-        if(!g.length) return p.name + '<br/>暂无出摊记录';
+        var rc = restCnt[p.dataIndex];
+        if(!g.length && !rc) return p.name + '<br/>暂无记录';
+        if(!g.length) return p.name + '（休息 ' + rc + ' 天）<br/>暂无出摊记录';
         var mx = Math.max.apply(null, g);
         var mn = Math.min.apply(null, g);
-        return p.name + '（出摊 ' + g.length + ' 天）'
+        return p.name + '（出摊 ' + g.length + ' 天' + (rc ? ' · 休息 ' + rc + ' 天' : '') + '）'
           + '<br/>平均：<b>' + fmt(p.value) + '</b> 元'
           + '<br/>最高 ' + fmt(mx) + ' 元 / 最低 ' + fmt(mn) + ' 元';
       }
@@ -540,12 +658,13 @@ function renderTable(){
   records.slice().reverse().forEach(function(r){
     var wk = weekdayIndex(r.date);
     var tr = document.createElement('tr');
+    if(r.is_rest) tr.className = 'rest-row';
     tr.innerHTML =
       '<td>' + r.date + '</td>' +
       '<td>' + (wk >= 5
         ? '<span class="wk-badge">' + WEEK_NAMES[wk] + '</span>'
         : WEEK_NAMES[wk]) + '</td>' +
-      '<td class="amt">' + fmt(r.amount) + '</td>' +
+      '<td class="amt">' + (r.is_rest ? '<span class="rest-badge">休</span>' : fmt(r.amount)) + '</td>' +
       '<td class="op"><button class="del" data-id="' + r.id + '" data-date="' + r.date + '">删除</button></td>';
     tbody.appendChild(tr);
   });
@@ -631,6 +750,17 @@ document.querySelectorAll('.tab').forEach(function(t){
 document.getElementById('btn-save').addEventListener('click', saveRecord);
 document.getElementById('input-amount').addEventListener('keydown', function(e){
   if(e.key === 'Enter') saveRecord();
+});
+document.getElementById('btn-prev').addEventListener('click', function(){ shiftDate(-1); });
+document.getElementById('btn-next').addEventListener('click', function(){ shiftDate(1); });
+document.getElementById('input-date').addEventListener('change', prefillFromRecord);
+document.getElementById('input-rest').addEventListener('change', syncRestUI);
+document.getElementById('link-today').addEventListener('click', function(){
+  var now = new Date();
+  document.getElementById('input-date').value = now.getFullYear() + '-'
+    + String(now.getMonth() + 1).padStart(2, '0') + '-'
+    + String(now.getDate()).padStart(2, '0');
+  prefillFromRecord();
 });
 document.getElementById('btn-ai').addEventListener('click', runAiAnalysis);
 

@@ -30,7 +30,7 @@ def get_conn():
 
 
 def init_db():
-    """首次运行时自动建表"""
+    """首次运行自动建表；老库自动迁移，支持休息日记录（金额可为空）"""
     conn = get_conn()
     try:
         with conn:
@@ -39,11 +39,33 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS records (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     date       TEXT    UNIQUE NOT NULL,   -- 日期，格式 YYYY-MM-DD
-                    amount     REAL    NOT NULL,          -- 当天营业额（元）
+                    amount     REAL,                       -- 当天营业额（元）；休息日为空
+                    is_rest    INTEGER NOT NULL DEFAULT 0, -- 1=休息日（未出摊）
                     created_at TEXT    DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+        # 老库迁移：没有 is_rest 列时重建表（金额列需允许为空）
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(records)")]
+        if "is_rest" not in cols:
+            with conn:
+                conn.execute(
+                    """
+                    CREATE TABLE records_migrate (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        date       TEXT    UNIQUE NOT NULL,
+                        amount     REAL,
+                        is_rest    INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT    DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO records_migrate (date, amount, is_rest, created_at) "
+                    "SELECT date, amount, 0, created_at FROM records"
+                )
+                conn.execute("DROP TABLE records")
+                conn.execute("ALTER TABLE records_migrate RENAME TO records")
     finally:
         conn.close()
 
@@ -59,7 +81,7 @@ def list_records():
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT id, date, amount FROM records ORDER BY date ASC"
+            "SELECT id, date, amount, is_rest FROM records ORDER BY date ASC"
         ).fetchall()
     finally:
         conn.close()
@@ -68,29 +90,33 @@ def list_records():
 
 @app.route("/api/records", methods=["POST"])
 def save_record():
-    """保存一条营业额记录；同一天重复保存时直接覆盖更新"""
+    """保存一条记录；同一天重复保存时直接覆盖更新。休息日不记金额"""
     data = request.get_json(silent=True) or {}
     date = str(data.get("date", "")).strip()
-    amount = data.get("amount")
+    is_rest = 1 if data.get("is_rest") else 0
 
     try:
         datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         return jsonify({"ok": False, "msg": "日期格式不正确"}), 400
 
-    try:
-        amount = round(float(amount), 2)
-        if amount < 0:
-            raise ValueError
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "msg": "金额必须是不小于 0 的数字"}), 400
+    if is_rest:
+        amount = None  # 休息日不记金额
+    else:
+        amount = data.get("amount")
+        try:
+            amount = round(float(amount), 2)
+            if amount < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "msg": "金额必须是不小于 0 的数字"}), 400
 
     conn = get_conn()
     try:
         with conn:
             conn.execute(
-                "INSERT OR REPLACE INTO records (date, amount) VALUES (?, ?)",
-                (date, amount),
+                "INSERT OR REPLACE INTO records (date, amount, is_rest) VALUES (?, ?, ?)",
+                (date, amount, is_rest),
             )
     finally:
         conn.close()
@@ -123,47 +149,55 @@ def ai_analysis():
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT date, amount FROM records ORDER BY date ASC"
+            "SELECT date, amount, is_rest FROM records ORDER BY date ASC"
         ).fetchall()
     finally:
         conn.close()
 
-    if len(rows) < 3:
-        return jsonify({"ok": False, "msg": "数据还太少，至少录入 3 天的营业额再试试"}), 400
+    stall_days = [r for r in rows if not r["is_rest"]]
+    if len(stall_days) < 3:
+        return jsonify({"ok": False, "msg": "出摊数据还太少，至少录入 3 天营业额再试试"}), 400
 
-    # 每日明细
+    # 每日明细（休息日单独标注）
     daily_text = "\n".join(
-        f"{r['date']} {weekday_cn(r['date'])} {r['amount']:.1f} 元" for r in rows
+        f"{r['date']} {weekday_cn(r['date'])} "
+        + ("休息" if r["is_rest"] else f"{r['amount']:.1f} 元")
+        for r in rows
     )
 
-    # 按星期汇总
+    # 按星期汇总（平均只算出摊日）
     summary_lines = []
     for name in WEEK_CN:
-        amounts = [r["amount"] for r in rows if weekday_cn(r["date"]) == name]
+        amounts = [r["amount"] for r in stall_days if weekday_cn(r["date"]) == name]
+        rest_cnt = sum(1 for r in rows if r["is_rest"] and weekday_cn(r["date"]) == name)
         if not amounts:
-            summary_lines.append(f"{name}：未出摊")
+            summary_lines.append(f"{name}：未出摊" + (f"（休息 {rest_cnt} 天）" if rest_cnt else ""))
             continue
         avg = sum(amounts) / len(amounts)
-        summary_lines.append(
+        line = (
             f"{name}：出摊 {len(amounts)} 天，平均 {avg:.1f} 元，"
             f"最高 {max(amounts):.1f} 元，最低 {min(amounts):.1f} 元"
         )
+        if rest_cnt:
+            line += f"（另有休息 {rest_cnt} 天）"
+        summary_lines.append(line)
 
-    total = sum(r["amount"] for r in rows)
+    total = sum(r["amount"] for r in stall_days)
 
     system_prompt = (
         "你是一位接地气的数据分析助手，服务对象是一位每天出摊卖饭团的摊主。"
         "请根据提供的营业额数据分析："
         "1. 营业额整体走势；"
-        "2. 星期几与营业额的关系（哪天最旺、哪天最淡）；"
-        "3. 日期上有没有周期规律（如周末效应）；"
+        "2. 星期几与营业额的关系（哪天最旺、哪天最淡；注意区分出摊日与休息日，平均只按出摊日算）；"
+        "3. 日期上有没有周期规律（如周末效应），出勤安排是否合理；"
         "4. 给出 2-3 条实用建议（备货量、出摊安排等）。"
         "要求：中文回答，语气口语化、摊主能看懂；用 markdown 分点输出，"
         "金额保留 1 位小数；总长度 350 字以内；数据不足以得出结论时要明说，不要编造。"
     )
     user_prompt = (
-        f"统计周期：{rows[0]['date']} 至 {rows[-1]['date']}，"
-        f"共 {len(rows)} 天出摊，累计营业额 {total:.1f} 元。\n\n"
+        f"统计周期：{rows[0]['date']} 至 {rows[-1]['date']}，共 {len(rows)} 天记录"
+        f"（出摊 {len(stall_days)} 天、休息 {len(rows) - len(stall_days)} 天），"
+        f"累计营业额 {total:.1f} 元。\n\n"
         f"按星期汇总：\n" + "\n".join(summary_lines) + f"\n\n每日明细：\n{daily_text}"
     )
 
